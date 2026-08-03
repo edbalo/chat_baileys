@@ -11,8 +11,8 @@ import pino from 'pino';
 import open from 'open';
 import { processarMensagemCliente, processarAudioCliente } from './geminiService.js';
 import { conectarBanco } from './db.js';
-import SessaoCliente from './models/SessaoCliente.js';
-import Triagem from './models/Triagem.js';
+import SessaoCliente from './models/sessaocliente.js';
+import Triagem from './models/triagem.js';
 
 const MODO_TESTE = true; 
 
