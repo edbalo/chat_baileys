@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Painel de Triagem - Farmácia</title>
+  <style>
+    :root {
+      --bg-color: #f4f6f9;
+      --card-bg: #ffffff;
+      --primary: #007bff;
+      --success: #28a745;
+      --danger: #dc3545;
+      --warning: #ffc107;
+      --text: #333;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text);
+      margin: 0;
+      padding: 20px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card-bg);
+      padding: 15px 25px;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+      margin-bottom: 25px;
+    }
+
+    h1 { margin: 0; font-size: 1.5rem; }
+
+    #status-conexao {
+      font-weight: bold;
+      padding: 6px 12px;
+      border-radius: 20px;
+      background: #e0e0e0;
+      font-size: 0.9rem;
+    }
+
+    #container-qr {
+      text-align: center;
+      background: var(--card-bg);
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    #qr-code { max-width: 200px; display: none; }
+
+    .grid-triagens {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-left: 5px solid var(--primary);
+      border-radius: 8px;
+      padding: 15px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.2s;
+    }
+
+    .card:hover { transform: translateY(-2px); }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+    }
+
+    .cliente-nome { font-weight: bold; font-size: 1.1rem; }
+    .horario { font-size: 0.85rem; color: #777; }
+
+    .tag-intencao {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      text-transform: uppercase;
+      background: #e9ecef;
+      margin-bottom: 10px;
+    }
+
+    .resumo {
+      font-size: 0.95rem;
+      line-height: 1.4;
+      margin-bottom: 15px;
+      white-space: pre-line;
+    }
+
+    .mensagens-extras {
+      background: #fff3cd;
+      border: 1px solid #ffeeba;
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      margin-bottom: 15px;
+    }
+
+    .btn-finalizar {
+      background: var(--success);
+      color: white;
+      border: none;
+      padding: 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+      width: 100%;
+      transition: background 0.2s;
+    }
+
+    .btn-finalizar:hover { background: #218838; }
+
+    .sem-triagens {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: #888;
+      padding: 40px;
+      background: var(--card-bg);
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>💊 Balcão de Triagem - Farmácia</h1>
+    <div id="status-conexao">Aguardando Conexão...</div>
+  </header>
+
+  <div id="container-qr">
+    <p id="msg-qr">Aguardando Código QR...</p>
+    <img id="qr-code" alt="QR Code WhatsApp">
+  </div>
+
+  <main class="grid-triagens" id="grid-triagens">
+    <div class="sem-triagens" id="sem-triagens">
+      Nenhum cliente aguardando atendimento no momento.
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    const statusElement = document.getElementById('status-conexao');
+    const qrImage = document.getElementById('qr-code');
+    const qrMsg = document.getElementById('msg-qr');
+    const qrContainer = document.getElementById('container-qr');
+    const gridTriagens = document.getElementById('grid-triagens');
+    const msgSemTriagens = document.getElementById('sem-triagens');
+
+    // =========================================================================
+    // EVENTOS DE STATUS DA CONEXÃO
+    // =========================================================================
+    socket.on('whatsapp_status', (status) => {
+      statusElement.textContent = status;
+      if (status.includes('Conectado')) {
+        statusElement.style.background = '#d4edda';
+        statusElement.style.color = '#155724';
+        qrContainer.style.display = 'none';
+      } else {
+        statusElement.style.background = '#f8d7da';
+        statusElement.style.color = '#721c24';
+      }
+    });
+
+    socket.on('qr_code', (qrUrl) => {
+      qrContainer.style.display = 'block';
+      qrImage.src = qrUrl;
+      qrImage.style.display = 'inline-block';
+      qrMsg.textContent = 'Escanie o QR Code com o WhatsApp da Farmácia:';
+    });
+
+    // =========================================================================
+    // EVENTOS DE HISTÓRICO E MANIPULAÇÃO DOS CARDS
+    // =========================================================================
+
+    // 💡 1. RECEBE A LISTA DE TRIAGENS AO RECARREGAR A PÁGINA
+    socket.on('carregar_triagens_iniciais', (listaTriagens) => {
+      gridTriagens.innerHTML = ''; // Limpa a tela
+
+      if (listaTriagens.length === 0) {
+        gridTriagens.appendChild(msgSemTriagens);
+        msgSemTriagens.style.display = 'block';
+        return;
+      }
+
+      listaTriagens.forEach(dados => {
+        adicionarOuAtualizarCard(dados);
+      });
+    });
+
+    // 💡 2. RECEBE UMA NOVA TRIAGEM EM TEMPO REAL
+    socket.on('nova_triagem', (dados) => {
+      adicionarOuAtualizarCard(dados);
+    });
+
+    // 💡 3. RECEBE NOVAS MENSAGENS ENVIADAS ENQUANTO O CLIENTE ESPERA HUMANO
+    socket.on('mensagem_extra_espera', (data) => {
+      const card = document.querySelector(`[data-remetente="${data.remetenteOriginal}"]`);
+      if (card) {
+        let areaExtras = card.querySelector('.mensagens-extras');
+        if (!areaExtras) {
+          areaExtras = document.createElement('div');
+          areaExtras.className = 'mensagens-extras';
+          areaExtras.innerHTML = '<strong>Novas mensagens do cliente:</strong><br>';
+          card.querySelector('.resumo').after(areaExtras);
+        }
+        const novaMsg = document.createElement('div');
+        novaMsg.textContent = `• ${data.mensagem}`;
+        areaExtras.appendChild(novaMsg);
+      }
+    });
+
+    // 💡 4. REMOVE O CARD QUANDO FINALIZADO
+    socket.on('atendimento_finalizado', (data) => {
+      removerCard(data.remetenteOriginal);
+    });
+
+    // =========================================================================
+    // FUNÇÕES AUXILIARES DE RENDERIZAÇÃO
+    // =========================================================================
+    function adicionarOuAtualizarCard(dados) {
+      if (msgSemTriagens) msgSemTriagens.style.display = 'none';
+
+      // Se o card já existir na DOM, não duplica
+      let card = document.querySelector(`[data-remetente="${dados.remetenteOriginal}"]`);
+      
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'card';
+        card.setAttribute('data-remetente', dados.remetenteOriginal);
+        gridTriagens.prepend(card);
+      }
+
+      const intencao = dados.intencao || dados.categoria || 'Geral';
+      const resumo = dados.resumo || dados.resumoAtendimento || 'Sem resumo disponível.';
+      const nomeCliente = dados.nomeCliente || `Cliente (${dados.numero})`;
+
+      let htmlExtras = '';
+      if (dados.mensagensExtras && dados.mensagensExtras.length > 0) {
+        htmlExtras = `<div class="mensagens-extras"><strong>Novas mensagens do cliente:</strong><br>${dados.mensagensExtras.map(m => `• ${m}`).join('<br>')}</div>`;
+      }
+
+      card.innerHTML = `
+        <div>
+          <div class="card-header">
+            <span class="cliente-nome">${nomeCliente}</span>
+            <span class="horario">${dados.horario}</span>
+          </div>
+          <div><span class="tag-intencao">${intencao}</span></div>
+          <div class="resumo">${resumo}</div>
+          ${htmlExtras}
+        </div>
+        <button class="btn-finalizar" onclick="finalizarAtendimento('${dados.remetenteOriginal}', '${dados.numero}')">
+          Finalizar Atendimento
+        </button>
+      `;
+    }
+
+    function finalizarAtendimento(remetenteOriginal, numero) {
+      socket.emit('finalizar_atendimento', { remetenteOriginal, numero });
+      removerCard(remetenteOriginal);
+    }
+
+    function removerCard(remetenteOriginal) {
+      const card = document.querySelector(`[data-remetente="${remetenteOriginal}"]`);
+      if (card) {
+        card.remove();
+      }
+
+      // Se não houver mais cards, volta a mensagem padrão
+      const cardsRestantes = gridTriagens.querySelectorAll('.card');
+      if (cardsRestantes.length === 0) {
+        gridTriagens.appendChild(msgSemTriagens);
+        msgSemTriagens.style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>
