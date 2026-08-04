@@ -1,7 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import QRCode from 'qrcode';
 import makeWASocket, { 
   useMultiFileAuthState, 
   DisconnectReason, 
@@ -51,7 +50,7 @@ async function atualizarEstadoCliente(id, novoEstado) {
 }
 
 // =============================================================================
-// CONEXÃO WHATSAPP
+// CONEXÃO WHATSAPP (MUDANÇA PARA CÓDIGO DE PAREAMENTO)
 // =============================================================================
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -59,22 +58,18 @@ async function connectToWhatsApp() {
   sock = makeWASocket({
     auth: state,
     logger: pino({ level: 'silent' }), 
-    printQRInTerminal: false 
+    printQRInTerminal: false // Desativa QR Code no terminal
   });
 
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      const qrImageUrl = await QRCode.toDataURL(qr);
-      io.emit('qr_code', qrImageUrl);
-    }
+    const { connection, lastDisconnect } = update;
 
     if (connection === 'open') {
       whatsappConectado = true;
       io.emit('whatsapp_status', 'Conectado com sucesso!');
+      console.log('✅ WhatsApp conectado via Código de Pareamento!');
     }
 
     if (connection === 'close') {
@@ -105,7 +100,6 @@ async function connectToWhatsApp() {
         
         const textoExtra = msg.message.conversation || msg.message.extendedTextMessage?.text || '[Mídia/Áudio]';
         
-        // Atualiza a triagem no MongoDB adicionando a nova mensagem
         await Triagem.findOneAndUpdate(
           { remetenteOriginal: remetente, ativa: true },
           { $push: { mensagensExtras: textoExtra } }
@@ -177,7 +171,6 @@ async function connectToWhatsApp() {
             ativa: true
           };
 
-          // Salva ou atualiza a triagem no MongoDB
           await Triagem.findOneAndUpdate(
             { remetenteOriginal: remetente },
             dadosTriagem,
@@ -194,7 +187,7 @@ async function connectToWhatsApp() {
 }
 
 // =============================================================================
-// EVENTOS DO SOCKET.IO
+// EVENTOS DO SOCKET.IO (COM GERADOR DE CÓDIGO DE PAREAMENTO)
 // =============================================================================
 io.on('connection', async (socket) => {
   if (whatsappConectado) {
@@ -203,7 +196,55 @@ io.on('connection', async (socket) => {
     socket.emit('whatsapp_status', 'Desconectado');
   }
 
-  // Carrega do MongoDB apenas as triagens ativas ao conectar/atualizar o painel
+// EVENTO CORRIGIDO E ROBUSTO: Solicita o código de pareamento
+  socket.on('solicitar_codigo_pareamento', async (numeroTelefone) => {
+    try {
+      if (!sock) {
+        socket.emit('erro_pareamento', 'O Baileys ainda não foi inicializado no servidor.');
+        return;
+      }
+
+      const numeroLimpo = numeroTelefone.replace(/\D/g, '');
+
+      if (!numeroLimpo || numeroLimpo.length < 10) {
+        socket.emit('erro_pareamento', 'Número de telefone inválido. Digite com DDD.');
+        return;
+      }
+
+      if (sock.authState.creds.registered) {
+        socket.emit('whatsapp_status', 'Este WhatsApp já está conectado!');
+        return;
+      }
+
+      // Função auxiliar para aguardar o Socket estar pronto
+      const aguardarEGerarCodigo = async (tentativas = 0) => {
+        // Verifica se a conexão interna do Baileys está aberta
+        if (sock.ws?.isOpen) {
+          try {
+            const codigo = await sock.requestPairingCode(numeroLimpo);
+            console.log(`🔑 Código de Pareamento Gerado: ${codigo}`);
+            socket.emit('codigo_pareamento_gerado', codigo);
+          } catch (errCodigo) {
+            console.error('Erro ao chamar requestPairingCode:', errCodigo);
+            socket.emit('erro_pareamento', 'Falha no WhatsApp. Tente clicar em Gerar Código novamente em 5 segundos.');
+          }
+        } else if (tentativas < 10) {
+          // Se ainda não conectou, espera 1 segundo e tenta de novo (até 10 segundos)
+          console.log(`[PAREEMENTO] Aguardando conexão do WhatsApp... (tentativa ${tentativas + 1})`);
+          setTimeout(() => aguardarEGerarCodigo(tentativas + 1), 1000);
+        } else {
+          socket.emit('erro_pareamento', 'O WhatsApp demorou para responder. Verifique sua conexão e tente novamente.');
+        }
+      };
+
+      await aguardarEGerarCodigo();
+
+    } catch (err) {
+      console.error('Erro ao gerar código de pareamento:', err.message);
+      socket.emit('erro_pareamento', 'Erro ao processar solicitação.');
+    }
+  });
+
   try {
     const listaTriagens = await Triagem.find({ ativa: true });
     socket.emit('carregar_triagens_iniciais', listaTriagens);
@@ -215,10 +256,7 @@ io.on('connection', async (socket) => {
     const { remetenteOriginal, numero } = data;
     const targetId = remetenteOriginal || `${numero}@s.whatsapp.net`;
     
-    // Libera o bot para o cliente
     await atualizarEstadoCliente(targetId, ESTADOS.BOT_TRIAGEM);
-    
-    // Desativa a triagem no banco de dados
     await Triagem.findOneAndUpdate({ remetenteOriginal: targetId }, { ativa: false });
 
     io.emit('atendimento_finalizado', { remetenteOriginal: targetId, numero });
@@ -226,7 +264,7 @@ io.on('connection', async (socket) => {
   });
 });
 
-// Inicialização: Conecta primeiro ao MongoDB e depois ao WhatsApp/Servidor
+// Inicialização
 async function iniciar() {
   await conectarBanco();
   await connectToWhatsApp();

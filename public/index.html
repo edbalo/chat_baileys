@@ -44,15 +44,53 @@
       font-size: 0.9rem;
     }
 
-    #container-qr {
+    /* ESTILOS DA SEÇÃO DE PAREAMENTO */
+    #container-pareamento {
       text-align: center;
       background: var(--card-bg);
       padding: 20px;
       border-radius: 8px;
       margin-bottom: 20px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
     }
 
-    #qr-code { max-width: 200px; display: none; }
+    .form-pareamento {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .input-telefone {
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 1rem;
+      width: 250px;
+    }
+
+    .btn-gerar-codigo {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 5px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .btn-gerar-codigo:hover {
+      background: #0056b3;
+    }
+
+    #codigo-display {
+      font-size: 1.8rem;
+      font-weight: bold;
+      color: var(--primary);
+      letter-spacing: 4px;
+      margin-top: 15px;
+      display: none;
+    }
 
     .grid-triagens {
       display: grid;
@@ -143,9 +181,13 @@
     <div id="status-conexao">Aguardando Conexão...</div>
   </header>
 
-  <div id="container-qr">
-    <p id="msg-qr">Aguardando Código QR...</p>
-    <img id="qr-code" alt="QR Code WhatsApp">
+  <div id="container-pareamento">
+    <p id="msg-pareamento">Digite o número do WhatsApp da Farmácia com DDD para conectar:</p>
+    <div class="form-pareamento">
+      <input type="text" id="input-numero" class="input-telefone" placeholder="Ex: 5511999999999" />
+      <button class="btn-gerar-codigo" onclick="solicitarCodigo()">Gerar Código</button>
+    </div>
+    <div id="codigo-display"></div>
   </div>
 
   <main class="grid-triagens" id="grid-triagens">
@@ -159,32 +201,49 @@
     const socket = io();
 
     const statusElement = document.getElementById('status-conexao');
-    const qrImage = document.getElementById('qr-code');
-    const qrMsg = document.getElementById('msg-qr');
-    const qrContainer = document.getElementById('container-qr');
+    const containerPareamento = document.getElementById('container-pareamento');
+    const inputNumero = document.getElementById('input-numero');
+    const codigoDisplay = document.getElementById('codigo-display');
+    const msgPareamento = document.getElementById('msg-pareamento');
     const gridTriagens = document.getElementById('grid-triagens');
     const msgSemTriagens = document.getElementById('sem-triagens');
 
     // =========================================================================
-    // EVENTOS DE STATUS DA CONEXÃO
+    // EVENTOS DE STATUS DA CONEXÃO E PAREAMENTO
     // =========================================================================
     socket.on('whatsapp_status', (status) => {
       statusElement.textContent = status;
       if (status.includes('Conectado')) {
         statusElement.style.background = '#d4edda';
         statusElement.style.color = '#155724';
-        qrContainer.style.display = 'none';
+        containerPareamento.style.display = 'none';
       } else {
         statusElement.style.background = '#f8d7da';
         statusElement.style.color = '#721c24';
+        containerPareamento.style.display = 'block';
       }
     });
 
-    socket.on('qr_code', (qrUrl) => {
-      qrContainer.style.display = 'block';
-      qrImage.src = qrUrl;
-      qrImage.style.display = 'inline-block';
-      qrMsg.textContent = 'Escanie o QR Code com o WhatsApp da Farmácia:';
+    function solicitarCodigo() {
+      const numero = inputNumero.value.trim();
+      if (!numero) {
+        alert('Por favor, digite o número do WhatsApp com DDD.');
+        return;
+      }
+      msgPareamento.textContent = 'Solicitando código ao WhatsApp...';
+      socket.emit('solicitar_codigo_pareamento', numero);
+    }
+
+    socket.on('codigo_pareamento_gerado', (codigo) => {
+      const codigoFormatado = codigo?.match(/.{1,4}/g)?.join('-') || codigo;
+      msgPareamento.textContent = 'Digite este código no seu WhatsApp em Aparelhos Conectados:';
+      codigoDisplay.textContent = codigoFormatado;
+      codigoDisplay.style.display = 'block';
+    });
+
+    socket.on('erro_pareamento', (mensagem) => {
+      alert(mensagem);
+      msgPareamento.textContent = 'Digite o número do WhatsApp da Farmácia com DDD para conectar:';
     });
 
     // =========================================================================
