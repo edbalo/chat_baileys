@@ -13,7 +13,7 @@ import { conectarBanco } from './db.js';
 import SessaoCliente from './models/sessaocliente.js';
 import Triagem from './models/triagem.js';
 
-const MODO_TESTE = true; 
+const MODO_TESTE = false; 
 
 const app = express();
 const httpServer = createServer(app);
