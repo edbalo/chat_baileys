@@ -1,4 +1,6 @@
 node_modules/
 .env
 auth_info_baileys/
-
+index_bk.js
+index_bk.html
+teste_mongo_descarte.js

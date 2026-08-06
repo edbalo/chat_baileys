@@ -8,6 +8,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'; 
 import pino from 'pino';
 import open from 'open';
+import fs from 'fs';
 import { processarMensagemCliente, processarAudioCliente } from './geminiService.js';
 import { conectarBanco } from './db.js';
 import SessaoCliente from './models/sessaocliente.js';
@@ -23,6 +24,7 @@ app.use(express.static('public'));
 
 let sock;
 let whatsappConectado = false;
+const PASTA_AUTH = 'auth_info_baileys';
 
 const ESTADOS = {
   BOT_TRIAGEM: 'BOT_TRIAGEM',
@@ -50,15 +52,17 @@ async function atualizarEstadoCliente(id, novoEstado) {
 }
 
 // =============================================================================
-// CONEXÃO WHATSAPP (MUDANÇA PARA CÓDIGO DE PAREAMENTO)
+// CONEXÃO WHATSAPP (COM LIMPEZA AUTOMÁTICA EM CASO DE ERRO 401/LOGGED OUT)
 // =============================================================================
 async function connectToWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+  const { state, saveCreds } = await useMultiFileAuthState(PASTA_AUTH);
 
   sock = makeWASocket({
     auth: state,
     logger: pino({ level: 'silent' }), 
-    printQRInTerminal: false // Desativa QR Code no terminal
+    printQRInTerminal: false,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -74,11 +78,26 @@ async function connectToWhatsApp() {
 
     if (connection === 'close') {
       whatsappConectado = false;
-      const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-      io.emit('whatsapp_status', 'Conexão perdida. Tentando reconectar...');
-      if (shouldReconnect) {
-        connectToWhatsApp();
+      const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+      
+      // Identifica se o erro foi de deslogado/não autorizado (Erro 401)
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+
+      console.log(`⚠️ Conexão fechada. Motivo / Status Code: ${statusCode}`);
+      io.emit('whatsapp_status', 'Conexão perdida. Reiniciando pareamento...');
+
+      // Limpa os arquivos temporários caso o acesso tenha sido negado (401) ou não registrado
+      if (isLoggedOut || !sock?.authState?.creds?.registered) {
+        console.log('🧹 Limpando dados da pasta auth_info_baileys para permitir novo código...');
+        try {
+          fs.rmSync(PASTA_AUTH, { recursive: true, force: true });
+        } catch (e) {
+          console.error('Erro ao limpar pasta de autenticação:', e.message);
+        }
       }
+
+      // Reinicia a conexão do Baileys para aguardar a nova tentativa
+      connectToWhatsApp();
     }
   });
 
@@ -92,7 +111,6 @@ async function connectToWhatsApp() {
       const remetente = msg.key.remoteJid;
       const nomeCliente = MODO_TESTE && msg.key.fromMe ? 'Você (Cliente Simulado)' : (msg.pushName || remetente.split('@')[0]);
 
-      // 1. Busca estado no MongoDB
       const sessaoCliente = await obterEstadoCliente(remetente);
 
       if (sessaoCliente.estado === ESTADOS.AGUARDANDO_HUMANO) {
@@ -187,7 +205,7 @@ async function connectToWhatsApp() {
 }
 
 // =============================================================================
-// EVENTOS DO SOCKET.IO (COM GERADOR DE CÓDIGO DE PAREAMENTO)
+// EVENTOS DO SOCKET.IO (GERAÇÃO DE CÓDIGO COM RECONEXÃO AUTOMÁTICA)
 // =============================================================================
 io.on('connection', async (socket) => {
   if (whatsappConectado) {
@@ -196,14 +214,8 @@ io.on('connection', async (socket) => {
     socket.emit('whatsapp_status', 'Desconectado');
   }
 
-// EVENTO CORRIGIDO E ROBUSTO: Solicita o código de pareamento
   socket.on('solicitar_codigo_pareamento', async (numeroTelefone) => {
     try {
-      if (!sock) {
-        socket.emit('erro_pareamento', 'O Baileys ainda não foi inicializado no servidor.');
-        return;
-      }
-
       const numeroLimpo = numeroTelefone.replace(/\D/g, '');
 
       if (!numeroLimpo || numeroLimpo.length < 10) {
@@ -211,29 +223,33 @@ io.on('connection', async (socket) => {
         return;
       }
 
-      if (sock.authState.creds.registered) {
+      // Verifica se o WhatsApp já está realmente conectado e registrado
+      if (sock?.authState?.creds?.registered && whatsappConectado) {
         socket.emit('whatsapp_status', 'Este WhatsApp já está conectado!');
         return;
       }
 
-      // Função auxiliar para aguardar o Socket estar pronto
+      // Se o socket estiver inativo, reinicia antes de tentar gerar
+      if (!sock || !sock.ws || !sock.ws.isOpen) {
+        console.log('🔄 Socket do WhatsApp inativo. Reiniciando instância para novo código...');
+        await connectToWhatsApp();
+      }
+
       const aguardarEGerarCodigo = async (tentativas = 0) => {
-        // Verifica se a conexão interna do Baileys está aberta
-        if (sock.ws?.isOpen) {
+        if (sock?.ws?.isOpen) {
           try {
             const codigo = await sock.requestPairingCode(numeroLimpo);
             console.log(`🔑 Código de Pareamento Gerado: ${codigo}`);
             socket.emit('codigo_pareamento_gerado', codigo);
           } catch (errCodigo) {
             console.error('Erro ao chamar requestPairingCode:', errCodigo);
-            socket.emit('erro_pareamento', 'Falha no WhatsApp. Tente clicar em Gerar Código novamente em 5 segundos.');
+            socket.emit('erro_pareamento', 'Falha no WhatsApp. Aguarde alguns segundos e clique em Gerar Código novamente.');
           }
-        } else if (tentativas < 10) {
-          // Se ainda não conectou, espera 1 segundo e tenta de novo (até 10 segundos)
-          console.log(`[PAREEMENTO] Aguardando conexão do WhatsApp... (tentativa ${tentativas + 1})`);
+        } else if (tentativas < 15) {
+          console.log(`[PAREAMENTO] Aguardando conexão pronta... (tentativa ${tentativas + 1})`);
           setTimeout(() => aguardarEGerarCodigo(tentativas + 1), 1000);
         } else {
-          socket.emit('erro_pareamento', 'O WhatsApp demorou para responder. Verifique sua conexão e tente novamente.');
+          socket.emit('erro_pareamento', 'O WhatsApp demorou para responder. Clique em Gerar Código novamente.');
         }
       };
 
